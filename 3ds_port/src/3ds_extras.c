@@ -245,6 +245,10 @@ const CtrExtra gCtrExtras[] =
     /* The lead Pokémon walking behind the player, on HGSS's sprites from the
      * data pack (src/follower_mon.c). */
     {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("FOLLOWER", "ACOMPAÑANTE", "COMPAGNON", "COMPAGNO"), "follower", 2, 0, gCtrExtrasOffOn, NULL, NULL, NULL},
+    /* Level caps by badge (patches/pokeemerald/0057-level-caps.patch): at the
+     * cap a Pokémon gains no EXP, and Rare Candy and the Day Care stop
+     * working. ON by default. */
+    {CTR_EXTRAS_SCREEN(CTR_EXTRAS_ENHANCEMENTS, 1), CTR_TEXT("LEVEL CAPS", "LÍMITE NIVEL", "PLAFOND NIVEAU", "LIMITE LIVELLO"), "level_caps", 2, 1, gCtrExtrasOffOn, NULL, NULL, NULL},
     {0},
 };
 

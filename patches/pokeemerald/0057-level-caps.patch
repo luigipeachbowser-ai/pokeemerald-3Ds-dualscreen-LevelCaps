@@ -1,0 +1,167 @@
+Emerald 3DS changes to pret/pokeemerald 76463dac15cad36aca5e2b3f6366abf9e53f814f: level caps
+Applies after 0056-follower-pokemon.patch; apply with tools/bootstrap.py.
+
+diff --git a/include/pokemon.h b/include/pokemon.h
+index 53f7f02..5104607 100644
+--- a/include/pokemon.h
++++ b/include/pokemon.h
+@@ -499,6 +499,11 @@ u8 CheckPartyHasHadPokerus(struct Pokemon *party, u8 selection);
+ void UpdatePartyPokerusTime(u16 days);
+ void PartySpreadPokerus(struct Pokemon *party);
+ bool8 TryIncrementMonLevel(struct Pokemon *mon);
++#ifdef PLATFORM_3DS
++/* Level caps (OPTIONS, ENHANCEMENTS; 3ds_port). */
++u8 GetLevelCap(void);
++u32 ApplyLevelCapToExp(struct Pokemon *mon, u32 exp);
++#endif
+ u32 CanMonLearnTMHM(struct Pokemon *mon, u8 tm);
+ u32 CanSpeciesLearnTMHM(u16 species, u8 tm);
+ u8 GetMoveRelearnerMoves(struct Pokemon *mon, u16 *moves);
+diff --git a/src/battle_script_commands.c b/src/battle_script_commands.c
+index 4ae4c71..e52a349 100644
+--- a/src/battle_script_commands.c
++++ b/src/battle_script_commands.c
+@@ -3404,7 +3404,12 @@ static void Cmd_getexp(void)
+                 gBattleScripting.getexpState = 5;
+                 gBattleMoveDamage = 0; // used for exp
+             }
+-            else if (GetMonData(&gPlayerParty[gBattleStruct->expGetterMonId], MON_DATA_LEVEL) == MAX_LEVEL)
++            else if (GetMonData(&gPlayerParty[gBattleStruct->expGetterMonId], MON_DATA_LEVEL) == MAX_LEVEL
++#ifdef PLATFORM_3DS
++                     // Level caps (OPTIONS, ENHANCEMENTS): at the cap, no EXP.
++                     || GetMonData(&gPlayerParty[gBattleStruct->expGetterMonId], MON_DATA_LEVEL) >= GetLevelCap()
++#endif
++                    )
+             {
+                 *(&gBattleStruct->sentInPokes) >>= 1;
+                 gBattleScripting.getexpState = 5;
+@@ -3461,6 +3466,11 @@ static void Cmd_getexp(void)
+                         i = STRINGID_EMPTYSTRING4;
+                     }
+ 
++#ifdef PLATFORM_3DS
++                    // Level caps: the EXP stops at the cap, so the level-ups do.
++                    gBattleMoveDamage = ApplyLevelCapToExp(&gPlayerParty[gBattleStruct->expGetterMonId], gBattleMoveDamage);
++#endif
++
+                     // get exp getter battler
+                     if (gBattleTypeFlags & BATTLE_TYPE_DOUBLE)
+                     {
+diff --git a/src/daycare.c b/src/daycare.c
+index ff0eed5..abf7108 100644
+--- a/src/daycare.c
++++ b/src/daycare.c
+@@ -222,6 +222,11 @@ static void ApplyDaycareExperience(struct Pokemon *mon)
+     for (i = 0; i < MAX_LEVEL; i++)
+     {
+         // Add the mon's gained daycare experience level by level until it can't level up anymore.
++#ifdef PLATFORM_3DS
++        // Level caps (OPTIONS, ENHANCEMENTS): the Day Care stops at the cap.
++        if (GetMonData(mon, MON_DATA_LEVEL) >= GetLevelCap())
++            break;
++#endif
+         if (TryIncrementMonLevel(mon))
+         {
+             // Teach the mon new moves it learned while in the daycare.
+@@ -291,8 +296,18 @@ static u8 GetLevelAfterDaycareSteps(struct BoxPokemon *mon, u32 steps)
+     struct BoxPokemon tempMon = *mon;
+ 
+     u32 experience = GetBoxMonData(mon, MON_DATA_EXP) + steps;
++    u8 level;
+     SetBoxMonData(&tempMon, MON_DATA_EXP,  &experience);
+-    return GetLevelFromBoxMonExp(&tempMon);
++    level = GetLevelFromBoxMonExp(&tempMon);
++#ifdef PLATFORM_3DS
++    // Level caps (OPTIONS, ENHANCEMENTS): the Day Care quotes and charges to
++    // the cap only, and a mon already above it gains nothing there.
++    if (level > GetLevelCap())
++        level = GetLevelCap();
++    if (level < GetLevelFromBoxMonExp(mon))
++        level = GetLevelFromBoxMonExp(mon);
++#endif
++    return level;
+ }
+ 
+ static u8 GetNumLevelsGainedFromSteps(struct DaycareMon *daycareMon)
+diff --git a/src/party_menu.c b/src/party_menu.c
+index e0cc52e..775c399 100755
+--- a/src/party_menu.c
++++ b/src/party_menu.c
+@@ -5141,7 +5141,12 @@ void ItemUseCB_RareCandy(u8 taskId, TaskFunc task)
+     u16 *itemPtr = &gSpecialVar_ItemId;
+     bool8 cannotUseEffect;
+ 
+-    if (GetMonData(mon, MON_DATA_LEVEL) != MAX_LEVEL)
++    if (GetMonData(mon, MON_DATA_LEVEL) != MAX_LEVEL
++#ifdef PLATFORM_3DS
++        // Level caps (OPTIONS, ENHANCEMENTS): a Rare Candy does nothing at the cap.
++        && GetMonData(mon, MON_DATA_LEVEL) < GetLevelCap()
++#endif
++        )
+     {
+         BufferMonStatsToTaskData(mon, arrayPtr);
+         cannotUseEffect = ExecuteTableBasedItemEffect_(gPartyMenu.slotId, *itemPtr, 0);
+diff --git a/src/pokemon.c b/src/pokemon.c
+index 4a6df27..1466839 100644
+--- a/src/pokemon.c
++++ b/src/pokemon.c
+@@ -6311,6 +6311,59 @@ void PartySpreadPokerus(struct Pokemon *party)
+     }
+ }
+ 
++#ifdef PLATFORM_3DS
++/* Level caps (OPTIONS, ENHANCEMENTS, "level_caps"): the highest level a
++ * Pokémon of the player's reaches, by the badges won - each the level of
++ * that Gym Leader's ace, the eighth the Champion's. Beating the Champion
++ * lifts the cap. */
++static const u8 sLevelCaps[NUM_BADGES + 1] =
++{
++    15, // no badge: Roxanne's
++    19, // Brawly
++    24, // Wattson
++    29, // Flannery
++    32, // Norman
++    34, // Winona
++    43, // Tate and Liza
++    47, // Juan
++    58, // eight badges: Wallace's
++};
++
++u8 GetLevelCap(void)
++{
++    u8 badges = 0;
++    s32 i;
++
++    if (!CtrExtras_Get("level_caps") || FlagGet(FLAG_SYS_GAME_CLEAR))
++        return MAX_LEVEL;
++    for (i = 0; i < NUM_BADGES; i++)
++        if (FlagGet(FLAG_BADGE01_GET + i))
++            badges++;
++    return sLevelCaps[badges];
++}
++
++/* The EXP a mon may still gain under the level cap: 0 at it, at most the
++ * points to the cap's level, so a level-up ends exactly there. */
++u32 ApplyLevelCapToExp(struct Pokemon *mon, u32 exp)
++{
++    u8 cap = GetLevelCap();
++    u16 species;
++    u32 currExp;
++    u32 capExp;
++
++    if (exp == 0 || GetMonData(mon, MON_DATA_LEVEL) >= cap)
++        return 0;
++    species = GetMonData(mon, MON_DATA_SPECIES);
++    currExp = GetMonData(mon, MON_DATA_EXP);
++    capExp = gExperienceTables[gSpeciesInfo[species].growthRate][cap];
++    if (currExp >= capExp)
++        return 0;
++    if (exp > capExp - currExp)
++        return capExp - currExp;
++    return exp;
++}
++#endif
++
+ bool8 TryIncrementMonLevel(struct Pokemon *mon)
+ {
+     u16 species = GetMonData(mon, MON_DATA_SPECIES, 0);
